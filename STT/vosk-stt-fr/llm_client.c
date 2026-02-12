@@ -4,8 +4,7 @@
 #include <string.h>
 
 #define OLLAMA_URL "http://localhost:11434/api/generate"
-#define MODEL_NAME                                                             \
-  "ministral:3b" // User requested 'mistral 3 3b instruct', likely ministral:3b
+#define MODEL_NAME "ministral-3:3b" // User verified model name
 
 // Helper to escape special characters for JSON string in shell command
 // Very basic escaping for quotes and newlines
@@ -15,11 +14,17 @@ void escape_json_string(char *dest, const char *src) {
     if (src[i] == '"') {
       dest[j++] = '\\';
       dest[j++] = '"';
-    } else if (src[i] == '\n') {
-      dest[j++] = ' '; // Replace newline with space for simplicity in shell cmd
     } else if (src[i] == '\\') {
       dest[j++] = '\\';
       dest[j++] = '\\';
+    } else if (src[i] == '\'') {
+      // Escape single quote for shell: ' -> '\''
+      dest[j++] = '\'';
+      dest[j++] = '\\';
+      dest[j++] = '\'';
+      dest[j++] = '\'';
+    } else if (src[i] == '\n') {
+      dest[j++] = ' ';
     } else {
       dest[j++] = src[i];
     }
@@ -94,7 +99,7 @@ int send_to_llm(const char *prompt) {
            OLLAMA_URL, MODEL_NAME, escaped_prompt);
 
   printf("[LLM] Sending query via curl...\n");
-  // printf("Command: %s\n", command); // Debug
+  printf("Command: %s\n", command); // Debug
 
   FILE *fp = popen(command, "r");
   if (fp == NULL) {
@@ -113,6 +118,7 @@ int send_to_llm(const char *prompt) {
     return -1;
   }
 
+  printf("[LLM] Raw response: %s\n", buffer); // Debug
   extract_response(buffer);
   return 0;
 }
