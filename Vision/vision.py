@@ -50,7 +50,7 @@ class MiraRobot:
         self.is_processing_llm = True
         try:
             payload = {
-                "model": "ministral-3-3b-instruct-2512",
+                "model": "cognitivecomputations_dolphin-mistral-24b-venice-edition",
                 "messages": [
                     {"role": "system", "content": "Tu es MIRA. Tu es sarcastique et brève."},
                     {"role": "user", "content": f"L'utilisateur est {emotion} et {pose_desc}. Commentaire court et piquant."}
@@ -86,7 +86,7 @@ class MiraRobot:
                             if px > 0 and py > 0:
                                 cv2.circle(annotated_frame, (px, py), 4, (0, 255, 0), -1)
 
-            if time.time() - self.last_trigger > 4:
+            if time.time() - self.last_trigger > 15:
                 self.last_trigger = time.time()
                 threading.Thread(target=self.analyze_face, args=(frame.copy(),)).start()
 
@@ -98,9 +98,26 @@ class MiraRobot:
                     
                     threading.Thread(target=self.llm_worker, args=(self.current_emotion, pose)).start()
 
-            cv2.rectangle(annotated_frame, (0, 0), (frame.shape[1], 80), (0, 0, 0), -1)
-            cv2.putText(annotated_frame, f"MOOD: {self.current_emotion.upper()}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(annotated_frame, f"MIRA: {self.current_response}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # Overlay pour fond semi-transparent
+            overlay = annotated_frame.copy()
+            cv2.rectangle(overlay, (0, 0), (frame.shape[1], 120), (10, 10, 10), -1)
+            cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
+            
+            # Ligne de séparation néon
+            cv2.line(annotated_frame, (0, 120), (frame.shape[1], 120), (0, 255, 255), 2)
+
+            # Affichage du MOOD
+            mood_color = (0, 255, 255) if self.current_emotion != "neutre" else (200, 200, 200)
+            cv2.putText(annotated_frame, f"MOOD: {self.current_emotion.upper()}", (20, 35), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, mood_color, 2, cv2.LINE_AA)
+
+            # Affichage de la réponse MIRA (avec wrapping basique)
+            text = f"MIRA: {self.current_response}"
+            max_width = 60  # caractères environ
+            y0, dy = 70, 25
+            for i, line in enumerate([text[i:i+max_width] for i in range(0, len(text), max_width)]):
+                cv2.putText(annotated_frame, line, (20, y0 + i*dy), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
             
             cv2.imshow("MIRA VISION", annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
