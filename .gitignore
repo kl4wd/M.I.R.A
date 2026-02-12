@@ -1,6 +1,1 @@
-model/
-*.zip
-*.so
-*.dll
-*.exe
-mira_stt
+Vision/mira/
