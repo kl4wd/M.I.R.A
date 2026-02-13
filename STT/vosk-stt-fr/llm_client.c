@@ -4,7 +4,7 @@
 #include <string.h>
 
 #define OLLAMA_URL "http://localhost:11434/api/generate"
-#define MODEL_NAME "ministral-3:3b" // User verified model name
+#define MODEL_NAME "mira" // Custom model created from Modelfile
 
 // Helper to escape special characters for JSON string in shell command
 // Very basic escaping for quotes and newlines
