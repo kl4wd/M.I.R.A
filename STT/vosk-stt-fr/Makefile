@@ -24,3 +24,9 @@ clean:
 
 run: stt_app
 	./stt_app
+
+docker-up:
+	docker-compose up --build
+
+docker-down:
+	docker-compose down

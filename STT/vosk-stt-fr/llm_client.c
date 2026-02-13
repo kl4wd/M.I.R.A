@@ -3,7 +3,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define OLLAMA_URL "http://localhost:11434/api/generate"
+#define DEFAULT_OLLAMA_URL "http://localhost:11434/api/generate"
+
+const char *get_ollama_url() {
+  const char *env_url = getenv("OLLAMA_URL");
+  if (env_url)
+    return env_url;
+  return DEFAULT_OLLAMA_URL;
+}
 #define MODEL_NAME "mira" // Custom model created from Modelfile
 
 // Helper to escape special characters for JSON string in shell command
@@ -95,8 +102,8 @@ int send_to_llm(const char *prompt) {
   // more complex escaping. For this demo, we assume relatively simple input.
   snprintf(command, sizeof(command),
            "curl -s -X POST %s -d '{\"model\": \"%s\", \"prompt\": \"%s\", "
-           "\"stream\": false}'",
-           OLLAMA_URL, MODEL_NAME, escaped_prompt);
+           "\"stream\": false, \"keep_alive\": -1}'",
+           get_ollama_url(), MODEL_NAME, escaped_prompt);
 
   printf("[LLM] Sending query via curl...\n");
   printf("Command: %s\n", command); // Debug
@@ -118,7 +125,8 @@ int send_to_llm(const char *prompt) {
     return -1;
   }
 
-  printf("[LLM] Raw response: %s\n", buffer); // Debug
+  // printf("[LLM] Raw response: %s\n", buffer); // Debug removed per user
+  // request
   extract_response(buffer);
   return 0;
 }
