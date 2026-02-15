@@ -13,7 +13,6 @@ try:
 except ImportError:
     pass
 
-from deepface import DeepFace
 from ultralytics import YOLO
 import cv2
 import time
@@ -21,41 +20,47 @@ import threading
 import requests
 
 LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
-MODEL_POSE = "yolov8n-pose.pt"
+# Using standard YOLOv8n model for object detection instead of pose
+MODEL_OBJ = "yolov8n.pt"
+
+# List of dangerous objects to detect (COCO classes)
+DANGEROUS_OBJECTS = {"knife", "scissors", "baseball bat"}
 
 class MiraRobot:
     def __init__(self):
-        print("--- MIRA VISION : READY ---")
-        self.model = YOLO(MODEL_POSE)
-        self.current_response = "J'analyse..."
+        print("MIRA VISION (SECURITY MODE) : READY")
+        self.model = YOLO(MODEL_OBJ)
+        self.current_response = "Scanne le périmètre..."
         self.is_processing_llm = False
         self.last_trigger = 0
-        self.current_emotion = "neutre"
 
-    def analyze_face(self, frame):
-        try:
-            analysis = DeepFace.analyze(
-                frame, 
-                actions=['emotion'], 
-                enforce_detection=False, 
-                detector_backend='opencv', 
-                silent=True
-            )
-            if analysis:
-                self.current_emotion = analysis[0]['dominant_emotion']
-        except:
-            pass
-
-    def llm_worker(self, emotion, pose_desc):
+    def llm_worker(self, objects):
         self.is_processing_llm = True
         try:
+            detected_threats = [obj for obj in objects if obj in DANGEROUS_OBJECTS]
+            has_threat = len(detected_threats) > 0
+            
+            object_str = ", ".join(objects) if objects else "rien de spécial"
+            
+            system_prompt = (
+                "Tu es MIRA, une IA de sécurité sarcastique mais vigilante. "
+                "Si tu vois une arme ou un danger (couteau, ciseaux, batte), tu dois alerter immédiatement et menacer l'intrus. "
+                "Sinon, tu te moques gentiment de ce que tu vois."
+            )
+
+            user_prompt = f"Je vois : {object_str}. "
+            if has_threat:
+                user_prompt += f"ALERTE : J'ai détecté {', '.join(detected_threats)} ! Réagis de manière agressive pour dissuader."
+            else:
+                user_prompt += "Rien de dangereux pour l'instant. Fais un commentaire sur la situation."
+
             payload = {
-                "model": "cognitivecomputations_dolphin-mistral-24b-venice-edition",
+                "model": "ministral-3-3b-instruct-2512",
                 "messages": [
-                    {"role": "system", "content": "Tu es MIRA. Tu es sarcastique et brève."},
-                    {"role": "user", "content": f"L'utilisateur est {emotion} et {pose_desc}. Commentaire court et piquant."}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
                 ],
-                "temperature": 0.7,
+                "temperature": 0.8,
                 "stream": False
             }
             res = requests.post(LM_STUDIO_URL, json=payload, timeout=5)
@@ -72,54 +77,73 @@ class MiraRobot:
             
             results = self.model(frame, verbose=False)[0]
             annotated_frame = frame.copy()
+            
+            current_detected_objects = []
+            threat_detected = False
 
             if results.boxes:
                 for box in results.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-
-            if results.keypoints is not None:
-                for kpts in results.keypoints.xyn:
-                    for i, (x, y) in enumerate(kpts):
-                        if i >= 5:
-                            px, py = int(x * frame.shape[1]), int(y * frame.shape[0])
-                            if px > 0 and py > 0:
-                                cv2.circle(annotated_frame, (px, py), 4, (0, 255, 0), -1)
-
-            if time.time() - self.last_trigger > 15:
-                self.last_trigger = time.time()
-                threading.Thread(target=self.analyze_face, args=(frame.copy(),)).start()
-
-                if not self.is_processing_llm:
-                    pose = "immobile"
-                    if results.keypoints is not None and len(results.keypoints.xyn) > 0:
-                        if results.keypoints.xyn[0][9][1] < 0.5: 
-                            pose = "bras levés / excité"
+                    cls = int(box.cls[0])
+                    label = results.names[cls]
                     
-                    threading.Thread(target=self.llm_worker, args=(self.current_emotion, pose)).start()
+                    # Filter: Only detect person and dangerous objects
+                    if label != "person" and label not in DANGEROUS_OBJECTS:
+                        continue
+                    
+                    current_detected_objects.append(label)
+                    
+                    # Determine color based on threat level
+                    if label in DANGEROUS_OBJECTS:
+                        color = (0, 0, 255) # RED for danger
+                        label = f"DANGER: {label.upper()}"
+                        threat_detected = True
+                    else:
+                        color = (0, 255, 0) # GREEN for safe (person)
+                    
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            # Overlay pour fond semi-transparent
+            # Trigger LLM on threat or every 15s
+            current_time = time.time()
+            # Force trigger if threat detected and last trigger was > 5s ago (faster reaction for threats)
+            force_trigger = threat_detected and (current_time - self.last_trigger > 5)
+            # Regular trigger every 15s
+            regular_trigger = (current_time - self.last_trigger > 15)
+
+            if force_trigger or regular_trigger:
+                self.last_trigger = current_time
+                if not self.is_processing_llm:
+                    threading.Thread(target=self.llm_worker, args=(current_detected_objects,)).start()
+
+            # HUD Display
             overlay = annotated_frame.copy()
-            cv2.rectangle(overlay, (0, 0), (frame.shape[1], 120), (10, 10, 10), -1)
-            cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
+            header_color = (0, 0, 50) if not threat_detected else (0, 0, 100) # Red tint if threat
+            cv2.rectangle(overlay, (0, 0), (frame.shape[1], 120), header_color, -1)
+            annotated_frame = cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0)
             
-            # Ligne de séparation néon
-            cv2.line(annotated_frame, (0, 120), (frame.shape[1], 120), (0, 255, 255), 2)
+            line_color = (0, 255, 255) if not threat_detected else (0, 0, 255)
+            cv2.line(annotated_frame, (0, 120), (frame.shape[1], 120), line_color, 2)
 
-            # Affichage du MOOD
-            mood_color = (0, 255, 255) if self.current_emotion != "neutre" else (200, 200, 200)
-            cv2.putText(annotated_frame, f"MOOD: {self.current_emotion.upper()}", (20, 35), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, mood_color, 2, cv2.LINE_AA)
+            status_text = "SECURE" if not threat_detected else "THREAT DETECTED"
+            status_color = (0, 255, 0) if not threat_detected else (0, 0, 255)
+            
+            cv2.putText(annotated_frame, f"STATUS: {status_text}", (20, 35), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
 
-            # Affichage de la réponse MIRA (avec wrapping basique)
-            text = f"MIRA: {self.current_response}"
-            max_width = 60  # caractères environ
+            # MIRA Response Wrapping
+            text = f"MIRA: {str(self.current_response)}"
+            max_width = 80
             y0, dy = 70, 25
-            for i, line in enumerate([text[i:i+max_width] for i in range(0, len(text), max_width)]):
-                cv2.putText(annotated_frame, line, (20, y0 + i*dy), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
             
-            cv2.imshow("MIRA VISION", annotated_frame)
+            lines = [text[i:i+max_width] for i in range(0, len(text), max_width)]
+            for i, line_text in enumerate(lines):
+                y_pos = y0 + i * dy
+                if y_pos < frame.shape[0] - 10:
+                    cv2.putText(annotated_frame, line_text, (20, y_pos), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            
+            cv2.imshow("MIRA VISION - SECURITY MODE", annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
             
         cap.release()
