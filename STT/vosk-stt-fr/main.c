@@ -76,15 +76,11 @@ void process_result(const char *json_result) {
 
   printf("Transcription : %s\n", spoken_text);
 
-  CommandType cmd = parse_command(spoken_text);
-  if (cmd != CMD_UNKNOWN) {
-    printf("%s>>> COMMANDE DÉTECTÉE : [%s]%s\n", COLOR_GREEN,
-           get_command_action(cmd), COLOR_RESET);
-    execute_command(cmd);
-  } else {
-    printf("%s>>> [RELAY LLM] Envoi à l'IA...%s\n", COLOR_YELLOW, COLOR_RESET);
-    send_to_llm(spoken_text);
-  }
+  // Tout envoyer au Bridge Python (port 5000)
+  // C'est le Bridge qui décide : commande moteur → ESP32 ou question → RAG + LLM
+  printf("%s>>> [BRIDGE] Envoi au Bridge Python...%s\n", COLOR_YELLOW, COLOR_RESET);
+  send_to_llm(spoken_text);
+
   free(spoken_text);
 }
 
