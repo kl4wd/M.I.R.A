@@ -6,7 +6,7 @@ services:
     ports:
       - "1883:1883"
     volumes:
-      - /home/mira/M.I.R.A/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
     networks:
       - mira-network
 
@@ -17,13 +17,13 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - /home/mira/M.I.R.A/jeece_data/ollama_data:/root/.ollama
+      - ./jeece_data/ollama_data:/root/.ollama
     networks:
       - mira-network
 
   mira-bridge:
     build:
-      context: /home/mira/M.I.R.A/Bridge
+      context: ./Bridge
     container_name: mira-bridge
     restart: unless-stopped
     depends_on:
@@ -37,7 +37,7 @@ services:
 
   mira-llm:
     build:
-      context: /home/mira/M.I.R.A/LLM
+      context: ./LLM
     container_name: mira-llm
     restart: unless-stopped
     depends_on:
@@ -47,7 +47,7 @@ services:
       - MQTT_HOST=mosquitto
       - OLLAMA_URL=http://ollama:11434/api/generate
     volumes:
-      - /home/mira/M.I.R.A/jeece_data:/app/jeece_data
+      - ./jeece_data:/app/jeece_data
     privileged: true
     devices:
       - "/dev/snd:/dev/snd"
@@ -56,7 +56,7 @@ services:
 
   mira-vision:
     build:
-      context: /home/mira/M.I.R.A/Vision
+      context: ./Vision
     container_name: mira-vision
     restart: unless-stopped
     depends_on:
@@ -71,7 +71,7 @@ services:
 
   mira-stt:
     build:
-      context: /home/mira/M.I.R.A/STT/vosk-stt-fr
+      context: ./STT/vosk-stt-fr
     container_name: mira-stt
     restart: unless-stopped
     depends_on:
