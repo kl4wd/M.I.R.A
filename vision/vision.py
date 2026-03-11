@@ -1,195 +1,214 @@
+#!/usr/bin/env python3
+"""
+Module mira-vision — Détection d'objets via Raspberry Pi AI Camera (Sony IMX500).
+Publie les détections sur MQTT (mira/vision/output) avec un cooldown de 30s.
+"""
+
 import time
 import json
 import os
+import sys
+
 import paho.mqtt.client as mqtt
 from picamera2 import Picamera2
+from picamera2.devices import IMX500
+from picamera2.devices.imx500 import NetworkIntrinsics, postprocess_nanodet_detection
 
-# ── Configuration ──────────────────────────────────────────────
-MQTT_BROKER = os.getenv("MQTT_BROKER", "mira-mosquitto")
-MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
-MQTT_TOPIC = os.getenv("MQTT_TOPIC_VISION", "mira/vision/output")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.6))
-COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", 30))
 
-# ── Couleurs terminal ─────────────────────────────────────────
+MQTT_BROKER       = os.getenv("MQTT_BROKER", "mira-mosquitto")
+MQTT_PORT         = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_TOPIC        = os.getenv("MQTT_TOPIC_VISION", "mira/vision/output")
+CONFIDENCE_THRESH = float(os.getenv("CONFIDENCE_THRESHOLD", "0.55"))
+COOLDOWN_SECONDS  = int(os.getenv("COOLDOWN_SECONDS", "10"))
+MODEL_PATH        = os.getenv("IMX500_MODEL",
+                    "/usr/share/imx500-models/imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk")
+
+
 C_RESET  = "\033[0m"
 C_GREEN  = "\033[1;32m"
 C_CYAN   = "\033[0;36m"
 C_YELLOW = "\033[1;33m"
 C_RED    = "\033[1;31m"
 
+
+COCO_FR = {
+    'person': 'une personne', 'bicycle': 'un vélo', 'car': 'une voiture',
+    'motorcycle': 'une moto', 'airplane': 'un avion', 'bus': 'un bus',
+    'train': 'un train', 'truck': 'un camion', 'boat': 'un bateau',
+    'traffic light': 'un feu', 'fire hydrant': 'une borne incendie',
+    'stop sign': 'un panneau stop', 'bench': 'un banc',
+    'bird': 'un oiseau', 'cat': 'un chat', 'dog': 'un chien',
+    'horse': 'un cheval', 'sheep': 'un mouton', 'cow': 'une vache',
+    'elephant': 'un éléphant', 'bear': 'un ours', 'zebra': 'un zèbre',
+    'giraffe': 'une girafe', 'backpack': 'un sac à dos',
+    'umbrella': 'un parapluie', 'handbag': 'un sac à main',
+    'suitcase': 'une valise', 'frisbee': 'un frisbee',
+    'skis': 'des skis', 'snowboard': 'un snowboard',
+    'sports ball': 'un ballon', 'kite': 'un cerf-volant',
+    'bottle': 'une bouteille', 'wine glass': 'un verre',
+    'cup': 'une tasse', 'fork': 'une fourchette',
+    'knife': 'un couteau', 'spoon': 'une cuillère', 'bowl': 'un bol',
+    'banana': 'une banane', 'apple': 'une pomme',
+    'sandwich': 'un sandwich', 'orange': 'une orange',
+    'pizza': 'une pizza', 'donut': 'un donut', 'cake': 'un gâteau',
+    'chair': 'une chaise', 'couch': 'un canapé',
+    'potted plant': 'une plante', 'bed': 'un lit',
+    'dining table': 'une table', 'toilet': 'des toilettes',
+    'tv': 'une télévision', 'laptop': 'un portable',
+    'mouse': 'une souris', 'remote': 'une télécommande',
+    'keyboard': 'un clavier', 'cell phone': 'un téléphone',
+    'microwave': 'un micro-ondes', 'oven': 'un four',
+    'toaster': 'un grille-pain', 'sink': 'un évier',
+    'refrigerator': 'un frigo', 'book': 'un livre',
+    'clock': 'une horloge', 'vase': 'un vase',
+    'scissors': 'des ciseaux', 'teddy bear': 'un ours en peluche',
+}
+
+
 last_publish_time = 0.0
 mqtt_client = None
 
-def on_mqtt_connect(client, userdata, flags, rc):
-    print(f"{C_CYAN}[MQTT] Connecté avec le code {rc} au broker {MQTT_BROKER}{C_RESET}")
+def on_mqtt_connect(client, userdata, flags, rc, properties=None):
+    if rc == 0:
+        print(f"{C_GREEN}[MQTT] Connecté au broker {MQTT_BROKER}{C_RESET}")
+    else:
+        print(f"{C_RED}[MQTT] Échec connexion (code {rc}){C_RESET}")
 
 def init_mqtt():
-    """Initialise de façon robuste la connexion MQTT."""
     global mqtt_client
     try:
-        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-    except AttributeError:
+        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    except (AttributeError, TypeError):
         mqtt_client = mqtt.Client()
 
     mqtt_client.on_connect = on_mqtt_connect
-    
+
     while True:
         try:
-            print(f"{C_YELLOW}Tentative de connexion à {MQTT_BROKER}:{MQTT_PORT}...{C_RESET}")
+            print(f"{C_YELLOW}[MQTT] Connexion à {MQTT_BROKER}:{MQTT_PORT}...{C_RESET}")
             mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
             mqtt_client.loop_start()
-            break
+            return
         except Exception as e:
-            print(f"{C_RED}[ERREUR] MQTT non joignable : {e}. Nouvelle tentative dans 5s...{C_RESET}")
+            print(f"{C_RED}[MQTT] Erreur: {e} — retry dans 5s...{C_RESET}")
             time.sleep(5)
 
-def format_detections(detections):
-    """
-    Formate la liste brute de détections.
-    Format d'une détection (ex: IMX500 mobilenet) :
-    {'category': 0, 'conf': 0.85, 'category_name': 'person', 'box': [0.1, 0.2, 0.5, 0.8]}
-    """
-    labels = []
-    
+
+def detections_to_phrase(detections, labels):
+    """Convertit les détections filtrées en phrase descriptive française."""
+    detected = set()
     for det in detections:
-        # Gérer différents formats de sortie de réseaux neuronaux de picamera2
-        score = det.get('conf', 0.0)
-        label = det.get('category_name', str(det.get('category', 'unknown')))
-        
-        if score >= CONFIDENCE_THRESHOLD:
-            labels.append(label)
-    
-    if not labels:
+        cat_index = int(det.category)
+        if 0 <= cat_index < len(labels):
+            label = labels[cat_index]
+            if label and label != "-":
+                detected.add(label)
+
+    if not detected:
         return None
-        
-    # Construire la phrase descriptive
-    # Ex: "Je vois une personne et une chaise"
-    
-    unique_labels = list(set(labels)) # Enlever les doublons (ex: 3 personnes -> juste 'person')
-    
-    # Simple traduction française si ce sont les labels COCO (souvent par défaut)
-    translations = {
-        'person': 'une personne', 'bicycle': 'un vélo', 'car': 'une voiture',
-        'motorcycle': 'une moto', 'airplane': 'un avion', 'bus': 'un bus',
-        'train': 'un train', 'truck': 'un camion', 'boat': 'un bateau',
-        'traffic light': 'un feu de signalisation', 'fire hydrant': 'une borne à incendie',
-        'stop sign': 'un panneau stop', 'parking meter': 'un parcmètre', 'bench': 'un banc',
-        'bird': 'un oiseau', 'cat': 'un chat', 'dog': 'un chien', 'horse': 'un cheval',
-        'sheep': 'un mouton', 'cow': 'une vache', 'elephant': 'un éléphant', 'bear': 'un ours',
-        'zebra': 'un zèbre', 'giraffe': 'une girafe', 'backpack': 'un sac à dos',
-        'umbrella': 'un parapluie', 'handbag': 'un sac à main', 'tie': 'une cravate',
-        'suitcase': 'une valise', 'frisbee': 'un frisbee', 'skis': 'des skis',
-        'snowboard': 'un snowboard', 'sports ball': 'un ballon', 'kite': 'un cerf-volant',
-        'baseball bat': 'une batte de baseball', 'baseball glove': 'un gant de baseball',
-        'skateboard': 'un skateboard', 'surfboard': 'une planche de surf', 'tennis racket': 'une raquette',
-        'bottle': 'une bouteille', 'wine glass': 'un verre', 'cup': 'une tasse',
-        'fork': 'une fourchette', 'knife': 'un couteau', 'spoon': 'une cuillère', 'bowl': 'un bol',
-        'banana': 'une banane', 'apple': 'une pomme', 'sandwich': 'un sandwich', 'orange': 'une orange',
-        'broccoli': 'un brocoli', 'carrot': 'une carotte', 'hot dog': 'un hot dog', 'pizza': 'une pizza',
-        'donut': 'un donut', 'cake': 'un gâteau', 'chair': 'une chaise', 'couch': 'un canapé',
-        'potted plant': 'une plante', 'bed': 'un lit', 'dining table': 'une table',
-        'toilet': 'des toilettes', 'tv': 'une télévision', 'laptop': 'un ordinateur portable',
-        'mouse': 'une souris', 'remote': 'une télécommande', 'keyboard': 'un clavier',
-        'cell phone': 'un smartphone', 'microwave': 'un micro-ondes', 'oven': 'un four',
-        'toaster': 'un grille-pain', 'sink': 'un évier', 'refrigerator': 'un réfrigérateur',
-        'book': 'un livre', 'clock': 'une horloge', 'vase': 'un vase', 'scissors': 'des ciseaux',
-        'teddy bear': 'un ours en peluche', 'hair drier': 'un sèche-cheveux', 'toothbrush': 'une brosse à dents'
-    }
-    
-    fr_labels = [translations.get(lbl, lbl) for lbl in unique_labels]
-    
-    if len(fr_labels) == 1:
-        phrase = f"Je vois {fr_labels[0]}"
-    else:
-        last = fr_labels.pop()
-        phrase = f"Je vois {', '.join(fr_labels)} et {last}"
-        
-    return phrase
+
+    fr = [COCO_FR.get(lbl, lbl) for lbl in detected]
+    if len(fr) == 1:
+        return f"Je vois {fr[0]}"
+    last = fr.pop()
+    return f"Je vois {', '.join(fr)} et {last}"
+
+
 
 def main():
     global last_publish_time
-    
     init_mqtt()
-    
-    # ── Initialisation Caméra ──────────────────────────────────────
-    print(f"{C_CYAN}[INIT] Initialisation de Picamera2...{C_RESET}")
-    try:
-        picam2 = Picamera2()
-        
-        # Le réglage pour charger le firmware IMX500 et le JSON post_processing
-        # Cela s'appuie sur le framework PostProcessing de Picamera2 (imx500_mobilenet_ssd.json)
-        # Note: La configuration exacte peut dépendre de la version de Libcamera,
-        # mais on utilise ici l'approche classique par dictionnaire de config/tuning.
-        config = picam2.create_preview_configuration(
-            main={"size": (1920, 1080), "format": "BGR888"}
-        )
-        # On attache le réseau de tenseur à la chaîne de traitement (IMX500 gère cela en interne)
-        # picamera2 supporte un module de détection natif si installé via rpi-libcamera
-        picam2.configure(config)
-        
-        # Pour une caméra IMX500, la sortie d'inférence arrive dans les métadonnées de la frame
-        picam2.start()
-        print(f"{C_GREEN}[VISION] Caméra AI démarrée. En attente de détections...{C_RESET}")
-        
-    except Exception as e:
-        print(f"{C_RED}[ERREUR] Impossible de démarrer la caméra : {e}{C_RESET}")
-        return
+    print(f"{C_CYAN}[INIT] Chargement du modèle IMX500: {MODEL_PATH}{C_RESET}")
+    imx500 = IMX500(MODEL_PATH)
+    intrinsics = imx500.network_intrinsics or NetworkIntrinsics()
+    intrinsics.task = "object detection"
+    if intrinsics.labels is None:
+        labels_path = os.getenv("LABELS_FILE", "/usr/share/imx500-models/coco_labels.txt")
+        if os.path.exists(labels_path):
+            with open(labels_path) as f:
+                intrinsics.labels = f.read().splitlines()
+        else:
+            intrinsics.labels = list(COCO_FR.keys())
+    intrinsics.update_with_defaults()
 
-    # ── Boucle de capture et d'inférence ───────────────────────────
+    labels = intrinsics.labels
+
+    picam2 = Picamera2(imx500.camera_num)
+    config = picam2.create_preview_configuration(
+        controls={"FrameRate": intrinsics.inference_rate},
+        buffer_count=12
+    )
+
+    print(f"{C_CYAN}[INIT] Démarrage de la caméra AI...{C_RESET}")
+    imx500.show_network_fw_progress_bar()
+    picam2.start(config, show_preview=False)
+
+    if intrinsics.preserve_aspect_ratio:
+        imx500.set_auto_aspect_ratio()
+
+    print(f"{C_GREEN}[VISION] ✓ Caméra AI prête. Détection en cours...{C_RESET}")
+
+    last_detections = []
     while True:
         try:
-            # Récupère l'image et ses métadonnées (qui contiennent l'inférence IMX500)
-            request = picam2.capture_request()
-            metadata = request.metadata
-            
-            # Selon la version rpi-libcamera, ça s'appelle Imx500Inference ou ObjectDetections
-            # On cherche une clé ressemblant à des détections.
-            detections = None
-            if 'Imx500Inference' in metadata:
-                detections = metadata['Imx500Inference']
-            elif 'PostProcessingResults' in metadata:
-                results = metadata['PostProcessingResults']
-                if 'object_detect' in results:
-                     detections = results['object_detect']
-                     
-            if detections is None:
-                # Fallback format brut ou vide
-                detections = metadata.get('ObjectDetections', [])
-                
-            if not isinstance(detections, list):
-                detections = []
+            metadata = picam2.capture_metadata()
+            np_outputs = imx500.get_outputs(metadata, add_batch=True)
+            input_w, input_h = imx500.get_input_size()
 
-            # ── Logique de filtrage et cooldown ────────────────────────
-            current_time = time.time()
-            
-            # Formatage et filtrage par seuil de confiance
-            phrase = format_detections(detections)
-            
-            if phrase:
-                if (current_time - last_publish_time) >= COOLDOWN_SECONDS:
-                    # Le cooldown de 30s est respecté, on publie
-                    print(f"{C_CYAN}[VISION] Détection validée ({COOLDOWN_SECONDS}s écoulées) : {phrase}{C_RESET}")
+            if np_outputs is not None:
+                if intrinsics.postprocess == "nanodet":
+                    boxes, scores, classes = postprocess_nanodet_detection(
+                        outputs=np_outputs[0],
+                        conf=CONFIDENCE_THRESH,
+                        iou_thres=0.65,
+                        max_out_dets=10
+                    )[0]
+                    from picamera2.devices.imx500.postprocess import scale_boxes
+                    boxes = scale_boxes(boxes, 1, 1, input_h, input_w, False, False)
+                else:
+                    boxes   = np_outputs[0][0]
+                    scores  = np_outputs[1][0]
+                    classes = np_outputs[2][0]
+
+                    if intrinsics.bbox_normalization:
+                        boxes = boxes / input_h
+                    if intrinsics.bbox_order == "xy":
+                        boxes = boxes[:, [1, 0, 3, 2]]
+
+                # Créer liste de détections filtrées
+                class Detection:
+                    def __init__(self, cat, conf):
+                        self.category = cat
+                        self.conf = conf
+
+                last_detections = [
+                    Detection(cat, score)
+                    for _, score, cat in zip(boxes, scores, classes)
+                    if score > CONFIDENCE_THRESH
+                ]
+
+            # Cooldown + publication
+            now = time.time()
+            if last_detections and (now - last_publish_time) >= COOLDOWN_SECONDS:
+                phrase = detections_to_phrase(last_detections, labels)
+                if phrase:
+                    print(f"{C_CYAN}[VISION] {phrase}{C_RESET}")
                     mqtt_client.publish(MQTT_TOPIC, phrase)
-                    last_publish_time = current_time
-            
-            # Relâche la requête pour éviter les fuites de mémoire
-            request.release()
-            
-            # Petite pause pour ne pas surcharger le CPU
-            time.sleep(0.05)
-            
+                    last_publish_time = now
+
+            time.sleep(0.1)
+
         except KeyboardInterrupt:
-            print(f"{C_YELLOW}\n[VISION] Arrêt demandé...{C_RESET}")
+            print(f"\n{C_YELLOW}[VISION] Arrêt...{C_RESET}")
             break
         except Exception as e:
-            print(f"{C_RED}[ERREUR] Erreur dans la boucle de vision : {e}{C_RESET}")
+            print(f"{C_RED}[ERREUR] {e}{C_RESET}")
             time.sleep(1)
 
     picam2.stop()
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
-    print(f"{C_GREEN}[VISION] Module arrêté proprement.{C_RESET}")
+    print(f"{C_GREEN}[VISION] Arrêté proprement.{C_RESET}")
 
 if __name__ == "__main__":
     main()

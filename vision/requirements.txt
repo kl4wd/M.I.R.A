@@ -1,3 +1,2 @@
-paho-mqtt==1.6.1
-numpy
-# picamera2 est installé via le gestionnaire de paquets système (apt)
+paho-mqtt
+cv2

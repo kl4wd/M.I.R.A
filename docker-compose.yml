@@ -1,7 +1,5 @@
-version: "3.9"
-
 services:
-  # ── BROKER MQTT ────────────────────────────────────────────────────────────
+  # ── BROKER MQTT (Le cœur de la communication) ─────────────────
   mira-mosquitto:
     image: eclipse-mosquitto:latest
     container_name: mira-mosquitto
@@ -13,7 +11,7 @@ services:
     networks:
       - mira-network
 
-  # ── LLM (Ollama) ───────────────────────────────────────────────────────────
+  # ── LLM (Le cerveau de M.I.R.A) ───────────────────────────────
   mira-ollama:
     image: ollama/ollama:latest
     container_name: mira-ollama
@@ -22,18 +20,18 @@ services:
       - "11434:11434"
     dns:
       - 8.8.8.8
-      - 1.1.1.1
     volumes:
       - ./LLM/ollama_data:/root/.ollama
-      - ./LLM:/config
     networks:
       - mira-network
+    deploy:
+      resources:
+        limits:
+          cpus: "2.8" # On bride à 2.8 pour laisser 1.2 cœur au reste (STT + Vision)
 
-  # ── STT (Vosk) & Orchestrateur ─────────────────────────────────────────────
+  # ── STT & ORCHESTRATEUR (L'écouteur) ──────────────────────────
   mira-stt:
-    build:
-      context: ./STT
-      dockerfile: Dockerfile
+    build: ./STT
     container_name: mira-stt
     restart: unless-stopped
     privileged: true
@@ -41,8 +39,7 @@ services:
       - "/dev/snd:/dev/snd"
     environment:
       - OLLAMA_URL=http://mira-ollama:11434/api/generate
-      - OLLAMA_MODEL=mira
-      # Connexion MQTT
+      - OLLAMA_MODEL=mira # Pense à utiliser tinyllama si c'est trop lent
       - MQTT_BROKER=mira-mosquitto
       - MQTT_PORT=1883
     networks:
@@ -50,39 +47,26 @@ services:
     depends_on:
       - mira-mosquitto
       - mira-ollama
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.8" # On garantit de la puissance pour l'audio en temps réel
 
-  # ── VISION (Picamera2) ─────────────────────────────────────────────────────
+  # ── VISION (Les yeux via IMX500) ─────────────────────────────
   mira-vision:
-    build:
-      context: ./vision
-      dockerfile: Dockerfile
+    build: ./vision # Vérifie bien que ton dossier s'appelle 'Vision' avec une majuscule ou modifie ici
     container_name: mira-vision
-    restart: unless-stopped
     privileged: true
-    ipc: host
-    devices:
-      - "/dev/vchiq:/dev/vchiq"
-      - "/dev/video0:/dev/video0"
-      - "/dev/video1:/dev/video1"
-      - "/dev/video2:/dev/video2"
-      - "/dev/video3:/dev/video3"
-      - "/dev/dma_heap:/dev/dma_heap"
-    volumes:
-      - "/opt/vc:/opt/vc"
-      - "/run/udev:/run/udev:ro"
-      # Montage des libs système pour libcamera et picamera2
-      - "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:ro"
-      - "/usr/lib/python3/dist-packages:/usr/lib/python3/dist-packages:ro"
-      - "/usr/local/lib/python3.11/dist-packages:/usr/local/lib/python3.11/dist-packages:ro"
-      - "/usr/bin/libcamera-hello:/usr/bin/libcamera-hello:ro"
-    environment:
-      - MQTT_BROKER=mira-mosquitto
-      - MQTT_PORT=1883
-      - MQTT_TOPIC_VISION=mira/vision/output
-      - CONFIDENCE_THRESHOLD=0.6
-      - COOLDOWN_SECONDS=30
     networks:
       - mira-network
+    volumes:
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+      - /usr/share/imx500-models:/usr/share/imx500-models:ro
+      - /sys/kernel/debug:/sys/kernel/debug
+    environment:
+      - MQTT_BROKER=mira-mosquitto
+    restart: always
     depends_on:
       - mira-mosquitto
 
