@@ -86,6 +86,26 @@ services:
     depends_on:
       - mira-mosquitto
 
+  # ── BRIDGE MQTT → UART (ESP32) ─────────────────────────────────────────────
+  mira-bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    container_name: mira-bridge
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    environment:
+      - MQTT_BROKER=mira-mosquitto
+      - MQTT_PORT=1883
+      - UART_PORT=/dev/ttyUSB0
+      - UART_BAUD=115200
+    networks:
+      - mira-network
+    depends_on:
+      - mira-mosquitto
+
 networks:
   mira-network:
     name: mira-network
