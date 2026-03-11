@@ -2,3 +2,4 @@ vosk
 sounddevice
 requests
 numpy
+paho-mqtt

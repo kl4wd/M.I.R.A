@@ -4,9 +4,11 @@ import json
 import queue
 import struct
 import threading
+import time
 import numpy as np
 import requests
 import sounddevice as sd
+import paho.mqtt.client as mqtt
 from vosk import Model, KaldiRecognizer
 
 # ── Configuration ──────────────────────────────────────────────
@@ -16,6 +18,11 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://mira-ollama:11434/api/generate")
 MODEL_NAME = os.getenv("OLLAMA_MODEL", "mira")
 MODEL_PATH = os.getenv("VOSK_MODEL", "/app/model")
 NOISE_THRESHOLD = int(os.getenv("NOISE_THRESHOLD", "800"))  # Seuil RMS, ajustable
+
+# Variables MQTT
+derniere_vision = "Rien à signaler"
+last_vision_time = 0.0
+mqtt_client = None
 
 MOTOR_COMMANDS = {
     "avance", "avancer",
@@ -34,6 +41,16 @@ C_CYAN   = "\033[0;36m"
 C_YELLOW = "\033[1;33m"
 C_RED    = "\033[1;31m"
 C_BLUE   = "\033[1;34m"
+
+# ── Callbacks MQTT ────────────────────────────────────────────
+def on_mqtt_connect(client, userdata, flags, rc):
+    print(f"{C_CYAN}[MQTT] Connecté avec le code {rc}. Abonnement à mira/vision/output...{C_RESET}")
+    client.subscribe("mira/vision/output")
+
+def on_mqtt_message(client, userdata, msg):
+    global derniere_vision, last_vision_time
+    derniere_vision = msg.payload.decode("utf-8")
+    last_vision_time = time.time()
 
 # ── Queue audio ───────────────────────────────────────────────
 audio_queue = queue.Queue()
@@ -118,6 +135,10 @@ def process_text(text):
     motor_cmd = detect_motor_command(after_wake)
     if motor_cmd:
         print(f"{C_RED}[ORDRE DÉTECTÉ] {motor_cmd.upper()}{C_RESET}")
+        if mqtt_client:
+            payload = json.dumps({"action": motor_cmd})
+            mqtt_client.publish("mira/bridge/ordres", payload)
+            print(f"{C_CYAN}[MQTT] Ordre publié : {payload}{C_RESET}")
         return
 
     # Sinon, c'est une question → envoyer au LLM dans un thread séparé
@@ -127,7 +148,19 @@ def process_text(text):
 
 def _ask_and_print(prompt):
     """Thread worker pour appeler Ollama sans bloquer la boucle audio."""
-    response = ask_ollama(prompt)
+    global derniere_vision, last_vision_time
+    
+    vision_text = "Rien à signaler"
+    if time.time() - last_vision_time <= 15:
+        vision_text = derniere_vision
+        
+    full_prompt = (
+        f"[VUE (Caméra)] : {vision_text}\n"
+        f"[AUDIO (Microphone)] : {prompt}\n"
+        f"Réponds de manière naturelle et concise en tant que M.I.R.A."
+    )
+    
+    response = ask_ollama(full_prompt)
     print(f"{C_GREEN}[MIRA] {response}{C_RESET}")
 
 def find_microphone():
@@ -154,6 +187,25 @@ def find_working_rate(device_id):
     return None
 
 def main():
+    global mqtt_client
+    
+    # 0. Initialisation MQTT
+    print(f"{C_CYAN}[INIT] Connexion au broker MQTT...{C_RESET}")
+    # Compatibilité paho-mqtt v1 et v2
+    try:
+        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    except AttributeError:
+        mqtt_client = mqtt.Client()
+        
+    mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_message = on_mqtt_message
+    
+    try:
+        mqtt_client.connect("mira-mosquitto", 1883, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        print(f"{C_RED}[ERREUR] Impossible de se connecter à mira-mosquitto : {e}{C_RESET}")
+
     # 1. Charger le modèle Vosk
     print(f"{C_CYAN}[INIT] Chargement du modèle Vosk...{C_RESET}")
     if not os.path.exists(MODEL_PATH):

@@ -1,0 +1,92 @@
+version: "3.9"
+
+services:
+  # ── BROKER MQTT ────────────────────────────────────────────────────────────
+  mira-mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mira-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - mira-network
+
+  # ── LLM (Ollama) ───────────────────────────────────────────────────────────
+  mira-ollama:
+    image: ollama/ollama:latest
+    container_name: mira-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    volumes:
+      - ./LLM/ollama_data:/root/.ollama
+      - ./LLM:/config
+    networks:
+      - mira-network
+
+  # ── STT (Vosk) & Orchestrateur ─────────────────────────────────────────────
+  mira-stt:
+    build:
+      context: ./STT
+      dockerfile: Dockerfile
+    container_name: mira-stt
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - "/dev/snd:/dev/snd"
+    environment:
+      - OLLAMA_URL=http://mira-ollama:11434/api/generate
+      - OLLAMA_MODEL=mira
+      # Connexion MQTT
+      - MQTT_BROKER=mira-mosquitto
+      - MQTT_PORT=1883
+    networks:
+      - mira-network
+    depends_on:
+      - mira-mosquitto
+      - mira-ollama
+
+  # ── VISION (Picamera2) ─────────────────────────────────────────────────────
+  mira-vision:
+    build:
+      context: ./vision
+      dockerfile: Dockerfile
+    container_name: mira-vision
+    restart: unless-stopped
+    privileged: true
+    ipc: host
+    devices:
+      - "/dev/vchiq:/dev/vchiq"
+      - "/dev/video0:/dev/video0"
+      - "/dev/video1:/dev/video1"
+      - "/dev/video2:/dev/video2"
+      - "/dev/video3:/dev/video3"
+      - "/dev/dma_heap:/dev/dma_heap"
+    volumes:
+      - "/opt/vc:/opt/vc"
+      - "/run/udev:/run/udev:ro"
+      # Montage des libs système pour libcamera et picamera2
+      - "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:ro"
+      - "/usr/lib/python3/dist-packages:/usr/lib/python3/dist-packages:ro"
+      - "/usr/local/lib/python3.11/dist-packages:/usr/local/lib/python3.11/dist-packages:ro"
+      - "/usr/bin/libcamera-hello:/usr/bin/libcamera-hello:ro"
+    environment:
+      - MQTT_BROKER=mira-mosquitto
+      - MQTT_PORT=1883
+      - MQTT_TOPIC_VISION=mira/vision/output
+      - CONFIDENCE_THRESHOLD=0.6
+      - COOLDOWN_SECONDS=30
+    networks:
+      - mira-network
+    depends_on:
+      - mira-mosquitto
+
+networks:
+  mira-network:
+    name: mira-network
+    driver: bridge

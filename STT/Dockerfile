@@ -18,7 +18,7 @@ RUN wget -q https://alphacephei.com/vosk/models/vosk-model-fr-0.22.zip && \
     rm vosk-model-fr-0.22.zip
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --default-timeout=100 --no-cache-dir -r requirements.txt
 
 COPY stt.py .
 
