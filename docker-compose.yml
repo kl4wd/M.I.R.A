@@ -1,5 +1,4 @@
 services:
-  # ── BROKER MQTT (Le cœur de la communication) ─────────────────
   mira-mosquitto:
     image: eclipse-mosquitto:latest
     container_name: mira-mosquitto
@@ -11,25 +10,6 @@ services:
     networks:
       - mira-network
 
-  # ── LLM (Le cerveau de M.I.R.A) ───────────────────────────────
-  mira-ollama:
-    image: ollama/ollama:latest
-    container_name: mira-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    dns:
-      - 8.8.8.8
-    volumes:
-      - ./LLM/ollama_data:/root/.ollama
-    networks:
-      - mira-network
-    deploy:
-      resources:
-        limits:
-          cpus: "2.8" # On bride à 2.8 pour laisser 1.2 cœur au reste (STT + Vision)
-
-  # ── STT & ORCHESTRATEUR (L'écouteur) ──────────────────────────
   mira-stt:
     build: ./STT
     container_name: mira-stt
@@ -38,23 +18,17 @@ services:
     devices:
       - "/dev/snd:/dev/snd"
     environment:
-      - OLLAMA_URL=http://mira-ollama:11434/api/generate
-      - OLLAMA_MODEL=mira # Pense à utiliser tinyllama si c'est trop lent
+      - OLLAMA_URL=http://100.68.211.25:11434/api/generate
+      - OLLAMA_MODEL=mira
       - MQTT_BROKER=mira-mosquitto
       - MQTT_PORT=1883
     networks:
       - mira-network
     depends_on:
       - mira-mosquitto
-      - mira-ollama
-    deploy:
-      resources:
-        reservations:
-          cpus: "0.8" # On garantit de la puissance pour l'audio en temps réel
 
-  # ── VISION (Les yeux via IMX500) ─────────────────────────────
   mira-vision:
-    build: ./vision # Vérifie bien que ton dossier s'appelle 'Vision' avec une majuscule ou modifie ici
+    build: ./vision 
     container_name: mira-vision
     privileged: true
     networks:
@@ -70,11 +44,8 @@ services:
     depends_on:
       - mira-mosquitto
 
-  # ── BRIDGE MQTT → UART (ESP32) ─────────────────────────────────────────────
   mira-bridge:
-    build:
-      context: ./bridge
-      dockerfile: Dockerfile
+    build: ./bridge
     container_name: mira-bridge
     restart: unless-stopped
     privileged: true
