@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mira.local/schemas/robot-command.json",
+  "title": "Commande pont M.I.R.A",
+  "type": "object",
+  "required": ["action"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "Verbe reconnu par le bridge (voir bridge.py)",
+      "enum": [
+        "avance",
+        "avancer",
+        "recule",
+        "reculer",
+        "recul",
+        "gauche",
+        "droite",
+        "stop",
+        "stoppe",
+        "arrête",
+        "arreter",
+        "autopilot",
+        "autopilote",
+        "position"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
