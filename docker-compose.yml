@@ -10,6 +10,20 @@ services:
     networks:
       - mira-network
 
+  # LLM local — dashboard (hôte) : OLLAMA_URL=http://127.0.0.1:11434
+  # Depuis les autres services Docker : http://ollama:11434
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mira-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./LLM/Modelfile:/config/Modelfile:ro
+    networks:
+      - mira-network
+
   mira-stt:
     build: ./STT
     container_name: mira-stt
@@ -18,14 +32,16 @@ services:
     devices:
       - "/dev/snd:/dev/snd"
     environment:
-      - OLLAMA_URL=http://100.68.211.25:11434/api/generate
+      - OLLAMA_URL=http://ollama:11434/api/generate
       - OLLAMA_MODEL=mira
       - MQTT_BROKER=mira-mosquitto
       - MQTT_PORT=1883
+      - ROBOT_ID=mira-robot
     networks:
       - mira-network
     depends_on:
       - mira-mosquitto
+      - ollama
 
   mira-vision:
     build: ./vision 
@@ -84,3 +100,6 @@ networks:
   mira-network:
     name: mira-network
     driver: bridge
+
+volumes:
+  ollama_data:

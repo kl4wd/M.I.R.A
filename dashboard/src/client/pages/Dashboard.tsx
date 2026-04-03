@@ -1,0 +1,334 @@
+import { useEffect, useMemo, useState } from "react";
+import { MapContainer, Marker, Popup, TileLayer } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import { ChatPage } from "./Chat";
+
+type RobotSnap = {
+  id: string;
+  meta: Record<string, unknown> | null;
+  presence: { ts: number; online?: boolean } | null;
+  telemetry: Record<string, unknown> | null;
+  gps: { lat: number; lon: number; acc?: number; ts?: number } | null;
+  listening: { text: string; ts: number; source?: string } | null;
+  dockerStatus?: {
+    ts: number;
+    services: Array<{ name: string; running: boolean; status?: string }>;
+    error?: string;
+  } | null;
+  lastSeen: number;
+};
+
+type ContainersConfig = {
+  onDashboardHost: string[];
+  onRobot: string[];
+  labels?: Record<string, string>;
+};
+
+type LocalDockerPayload = {
+  ok: boolean;
+  error?: string;
+  services: Array<{
+    name: string;
+    label: string;
+    running: boolean;
+    status: string;
+    present: boolean;
+  }>;
+};
+
+const icon = L.icon({
+  iconUrl:
+    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  iconRetinaUrl:
+    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+  shadowUrl:
+    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+});
+
+export function DashboardPage() {
+  const [robots, setRobots] = useState<RobotSnap[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [commandAction, setCommandAction] = useState("stop");
+  const [containersCfg, setContainersCfg] = useState<ContainersConfig | null>(
+    null,
+  );
+  const [localDocker, setLocalDocker] = useState<LocalDockerPayload>({
+    ok: true,
+    services: [],
+  });
+
+  const selected = useMemo(
+    () => robots.find((r) => r.id === selectedId) ?? null,
+    [robots, selectedId],
+  );
+
+  useEffect(() => {
+    const es = new EventSource("/api/robots/stream");
+    es.addEventListener("snapshot", (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as {
+        robots: RobotSnap[];
+      };
+      setRobots(data.robots);
+      setSelectedId((prev) => prev ?? data.robots[0]?.id ?? null);
+    });
+    es.addEventListener("robot", (ev) => {
+      const snap = JSON.parse((ev as MessageEvent).data) as RobotSnap;
+      setRobots((prev) => {
+        const i = prev.findIndex((r) => r.id === snap.id);
+        if (i === -1) return [...prev, snap];
+        const next = [...prev];
+        next[i] = snap;
+        return next;
+      });
+    });
+    es.onerror = () => {
+      es.close();
+    };
+    return () => es.close();
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/config/containers", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j) setContainersCfg(j as ContainersConfig);
+      });
+  }, []);
+
+  useEffect(() => {
+    function load() {
+      void fetch("/api/health/docker-local", { credentials: "include" })
+        .then((r) => (r.ok ? r.json() : { ok: false, services: [] }))
+        .then((j) => setLocalDocker(j as LocalDockerPayload));
+    }
+    load();
+    const id = window.setInterval(load, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const center: [number, number] = selected?.gps
+    ? [selected.gps.lat, selected.gps.lon]
+    : [48.869_867, 2.307_077];
+
+  async function sendCommand() {
+    if (!selectedId) return;
+    await fetch(`/api/robots/${encodeURIComponent(selectedId)}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action: commandAction }),
+    });
+  }
+
+  const streamUrl =
+    selected?.meta && typeof selected.meta.streamUrl === "string"
+      ? (selected.meta.streamUrl as string)
+      : null;
+
+  const robotDockerRows = useMemo(() => {
+    const labels = containersCfg?.labels ?? {};
+    const order =
+      containersCfg?.onRobot?.length
+        ? containersCfg.onRobot
+        : (selected?.dockerStatus?.services.map((s) => s.name) ?? []);
+    return order.map((name) => {
+      const s = selected?.dockerStatus?.services.find((x) => x.name === name);
+      return {
+        name,
+        label: labels[name] ?? name,
+        running: s?.running ?? false,
+        status: s?.status ?? (selected?.dockerStatus ? "inconnu" : "—"),
+      };
+    });
+  }, [containersCfg, selected?.dockerStatus, selected?.id]);
+
+  return (
+    <div className="dashboard-page-wrap">
+      <section className="docker-health" aria-label="État des conteneurs Docker">
+        <div className="docker-health__col">
+          <h3 className="docker-health__title">Ce PC (dashboard)</h3>
+          {!localDocker.ok && localDocker.error && (
+            <p className="error small">{localDocker.error}</p>
+          )}
+          <ul className="docker-health__list">
+            {localDocker.services.map((s) => (
+              <li key={s.name} className="docker-health__item">
+                <span
+                  className={
+                    s.running
+                      ? "docker-health__dot docker-health__dot--ok"
+                      : "docker-health__dot docker-health__dot--bad"
+                  }
+                  title={s.status}
+                />
+                <span className="docker-health__name">{s.label}</span>
+                <span className="muted small">
+                  {!s.present ? "absent" : s.status}
+                </span>
+              </li>
+            ))}
+            {localDocker.services.length === 0 && (
+              <li className="muted small">Chargement ou Docker indisponible…</li>
+            )}
+          </ul>
+        </div>
+        <div className="docker-health__col">
+          <h3 className="docker-health__title">
+            Robot {selected ? `· ${selected.id}` : ""}
+          </h3>
+          {selected?.dockerStatus?.error && (
+            <p className="error small">{selected.dockerStatus.error}</p>
+          )}
+          {!selected && (
+            <p className="muted small">Sélectionnez un robot dans la liste.</p>
+          )}
+          {selected && !selected.dockerStatus && (
+            <p className="muted small">
+              Aucun rapport Docker MQTT encore (agent Pi avec{" "}
+              <code>DOCKER_REPORT_SEC</code> / topic{" "}
+              <code>
+                mira/robots/{selected.id}/docker/status
+              </code>
+              ).
+            </p>
+          )}
+          {selected && selected.dockerStatus && (
+            <ul className="docker-health__list">
+              {robotDockerRows.map((row) => (
+                <li key={row.name} className="docker-health__item">
+                  <span
+                    className={
+                      row.running
+                        ? "docker-health__dot docker-health__dot--ok"
+                        : "docker-health__dot docker-health__dot--bad"
+                    }
+                    title={row.status}
+                  />
+                  <span className="docker-health__name">{row.label}</span>
+                  <span className="muted small">{row.status}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+      <div className="dashboard dashboard-3col">
+      <aside className="sidebar">
+        <h2>Robots</h2>
+        <ul className="robot-list">
+          {robots.map((r) => (
+            <li key={r.id}>
+              <button
+                type="button"
+                className={r.id === selectedId ? "robot active" : "robot"}
+                onClick={() => setSelectedId(r.id)}
+              >
+                {r.id}
+                <span className="muted small">
+                  {r.presence?.online === false ? "hors ligne" : "vu récemment"}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        {selected && (
+          <div className="panel">
+            <h3>Commande MQTT</h3>
+            <select
+              value={commandAction}
+              onChange={(e) => setCommandAction(e.target.value)}
+            >
+              <option value="avance">avance</option>
+              <option value="recule">recule</option>
+              <option value="gauche">gauche</option>
+              <option value="droite">droite</option>
+              <option value="stop">stop</option>
+              <option value="autopilot">autopilot</option>
+              <option value="position">position</option>
+            </select>
+            <button type="button" onClick={() => void sendCommand()}>
+              Envoyer
+            </button>
+            <p className="muted small sidebar-hint">
+              La transcription micro s’affiche au centre (panneau dédié).
+            </p>
+            <h3>Télémétrie</h3>
+            <pre className="telemetry">
+              {JSON.stringify(selected.telemetry ?? {}, null, 2)}
+            </pre>
+          </div>
+        )}
+      </aside>
+      <section className="dashboard-center">
+        <div className="map-section">
+          <h3 className="section-title">Carte GPS</h3>
+          <MapContainer center={center} zoom={13} className="map">
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            {robots
+              .filter((r) => r.gps)
+              .map((r) => (
+                <Marker
+                  key={r.id}
+                  position={[r.gps!.lat, r.gps!.lon]}
+                  icon={icon}
+                  eventHandlers={{
+                    click: () => setSelectedId(r.id),
+                  }}
+                >
+                  <Popup>{r.id}</Popup>
+                </Marker>
+              ))}
+          </MapContainer>
+        </div>
+        <div className="transcription-dedicated" aria-live="polite">
+          <div className="transcription-dedicated__header">
+            <span className="transcription-dedicated__label">
+              Transcription micro
+            </span>
+            {selected && (
+              <span className="transcription-dedicated__robot">
+                {selected.id}
+              </span>
+            )}
+          </div>
+          {selected?.listening?.text ? (
+            <>
+              <p className="transcription-dedicated__text">
+                {selected.listening.text}
+              </p>
+              <div className="transcription-dedicated__meta">
+                {selected.listening.source === "vosk" ? "Vosk · " : ""}
+                {new Date(
+                  (selected.listening.ts ?? 0) * 1000,
+                ).toLocaleString()}
+              </div>
+            </>
+          ) : (
+            <p className="transcription-dedicated__empty muted">
+              Aucune phrase reçue pour ce robot. Vérifiez le service STT sur la
+              Pi et le topic MQTT{" "}
+              <code>mira/robots/{selected?.id ?? "…"}/listening</code>.
+            </p>
+          )}
+        </div>
+        <div className="video-panel video-panel--center">
+          <h3 className="section-title">Flux vidéo</h3>
+          {streamUrl ? (
+            <iframe title="stream" src={streamUrl} className="video-frame" />
+          ) : (
+            <p className="muted video-placeholder">
+              Aucune URL (champ <code>streamUrl</code> dans meta MQTT)
+            </p>
+          )}
+        </div>
+      </section>
+      <aside className="chat-column">
+        <ChatPage embedded />
+      </aside>
+      </div>
+    </div>
+  );
+}
